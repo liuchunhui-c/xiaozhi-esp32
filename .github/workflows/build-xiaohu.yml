@@ -116,33 +116,36 @@ jobs:
           echo "" >> out/flash-addresses.txt
           echo "Chip: ESP32-S3   Flash size: 16MB   SPI speed: 80MHz   SPI mode: DIO" >> out/flash-addresses.txt
 
-          cat > out/HOW-TO-FLASH.txt <<EOF
-XiaoHu Little - firmware package
-=================================
-Generated: ${STAMP} UTC
-Project version: ${VER}
-Patch applied: ${TAG}
-
-RECOMMENDED (one file only)
----------------------------
-Use Espressif Flash Download Tool (Windows):
-  chip      = ESP32-S3
-  file      = ${MERGED}
-  address   = 0x0
-  SPI SPEED = 80MHz
-  SPI MODE  = DIO
-  FLASH SIZE= 16MB
-  Tick "DoNotChgBin", then ERASE first, then START.
-
-FALLBACK (multiple files)
--------------------------
-See flash-addresses.txt for the per-file addresses.
-
-IMPORTANT
----------
-Project version is 99.0.0 so the official OTA cannot overwrite the meow sounds.
-If your device still gets overwritten, turn OFF OTA in the xiaozhi console.
-EOF
+          # 注意：这里不能用 heredoc（<<EOF）。heredoc 的正文必须顶格写，
+          # 会把 YAML 的缩进块撑破，导致整个工作流解析失败。用 echo 代替。
+          {
+            echo "XiaoHu Little - firmware package"
+            echo "================================="
+            echo "Generated: ${STAMP} UTC"
+            echo "Project version: ${VER}"
+            echo "Patch applied: ${TAG}"
+            echo ""
+            echo "RECOMMENDED (one file only)"
+            echo "---------------------------"
+            echo "Use Espressif Flash Download Tool (Windows):"
+            echo "  chip       = ESP32-S3"
+            echo "  file       = ${MERGED}"
+            echo "  address    = 0x0"
+            echo "  SPI SPEED  = 80MHz"
+            echo "  SPI MODE   = DIO"
+            echo "  FLASH SIZE = 16MB"
+            echo "  Tick DoNotChgBin, then ERASE first, then START."
+            echo ""
+            echo "FALLBACK (multiple files)"
+            echo "-------------------------"
+            echo "See flash-addresses.txt for the per-file addresses."
+            echo ""
+            echo "IMPORTANT"
+            echo "---------"
+            echo "Project version is 99.0.0 so the official OTA cannot"
+            echo "overwrite the meow sounds. If your device still gets"
+            echo "overwritten, turn OFF OTA in the xiaozhi console."
+          } > out/HOW-TO-FLASH.txt
 
           ls -l out
           echo "MERGED_NAME=${MERGED}" >> "$GITHUB_ENV"
