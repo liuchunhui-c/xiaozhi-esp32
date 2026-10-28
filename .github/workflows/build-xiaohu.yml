@@ -36,6 +36,13 @@ jobs:
       image: espressif/idf:v6.1
     timeout-minutes: 150
 
+    # 关键：jobs 里带 container 时，GitHub 默认用 `sh -e {0}` 执行 run 步骤，
+    # 而 sh 没有 `source` 命令（那是 bash 的）→ 报 "source: not found"、exit 127。
+    # 这里强制所有 run 步骤用 bash。
+    defaults:
+      run:
+        shell: bash
+
     steps:
       - name: 1/7 Check out my repository (patch files)
         uses: actions/checkout@v4
@@ -60,7 +67,15 @@ jobs:
         if: ${{ inputs.apply_meow_patch }}
         run: |
           set -e
-          python3 src/xiaohu-patch/apply_patch.py --repo src
+          # 镜像里 python3 的位置不固定，先试 python3，不行就借用 IDF 的 python 环境
+          if command -v python3 >/dev/null 2>&1; then
+            PY=python3
+          else
+            . "$IDF_PATH/export.sh"
+            PY=python
+          fi
+          echo "using python: $($PY --version 2>&1)"
+          "$PY" src/xiaohu-patch/apply_patch.py --repo src
 
       - name: 5/7 Write board configuration (board + LCD + PSRAM)
         run: |
@@ -73,10 +88,19 @@ jobs:
       - name: 6/7 Build with ESP-IDF v6.1
         run: |
           set -e
+          echo "IDF_PATH=${IDF_PATH}"
+          if [ -f "$IDF_PATH/export.sh" ]; then
+            echo "export.sh found"
+          else
+            echo "!! export.sh NOT found, listing /opt/esp"; ls -l /opt/esp || true
+          fi
           source "$IDF_PATH/export.sh"
           idf.py --version
           cd src
           idf.py set-target esp32s3
+          echo "---- board / lcd / psram / wake-word switches actually used ----"
+          grep -E '^CONFIG_(BOARD_TYPE|LCD_|ESPTOOLPY_FLASHSIZE|SPIRAM|SEND_WAKE_WORD_DATA)' sdkconfig | sort || true
+          echo "----------------------------------------------------------------"
           idf.py build
 
       - name: 7/7 Merge into one flashable binary and pack
@@ -102,9 +126,10 @@ jobs:
           echo "Flash addresses for ESP32-S3 (use ONLY if you do not use the merged file)" > out/flash-addresses.txt
           echo "" >> out/flash-addresses.txt
           if [ -f build/flash_args ]; then
-            grep -E '^0x' build/flash_args | while read -r addr path; do
-              if [ -f "$path" ]; then
-                cp "$path" "out/$(basename "$path")"
+            # flash_args 里的路径是相对 build/ 的，所以要进 build 再取
+            ( cd build && grep -E '^0x' flash_args ) | while read -r addr path; do
+              if [ -f "build/$path" ]; then
+                cp "build/$path" "out/$(basename "$path")"
                 echo "  $(basename "$path")   ->   $addr" >> out/flash-addresses.txt
               fi
             done
