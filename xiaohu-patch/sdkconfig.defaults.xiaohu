@@ -1,0 +1,42 @@
+# =============================================================================
+# 小虎 Little —— ESP32-S3-N16R8 + ST7735 128x160 编译配置
+#
+# 这个文件会在 GitHub Actions 里被追加到源码根目录的 sdkconfig.defaults 末尾，
+# 用来代替你手动点 menuconfig（云编译是没法交互点菜单的）。
+# 后写的值会覆盖前面的值，所以放在末尾生效。
+#
+# 键名均已对照仓库 v2.5.2 的 main/Kconfig.projbuild 与
+# ESP-IDF v6.1 的 components/esp_psram/esp32s3/Kconfig.spiram 核实过。
+# =============================================================================
+
+# ---- 板型：Bread Compact Wi-Fi + LCD (面包板) -------------------------------
+# S3 的默认板型是 BOARD_TYPE_BREAD_COMPACT_WIFI（不带屏），必须先关掉再开带屏的
+# CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI is not set
+CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI_LCD=y
+
+# ---- 屏幕：1.8 寸 ST7735 128*160 --------------------------------------------
+# 仓库默认是 LCD_ST7789_240X320，不改就是花屏 / 白屏
+# CONFIG_LCD_ST7789_240X320 is not set
+CONFIG_LCD_ST7735_128X160=y
+
+# ---- Flash：16 MB -----------------------------------------------------------
+# 仓库的 sdkconfig.defaults 里已经有这一条，这里再写一次做保险
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# ---- PSRAM：8 MB Octal（N16R8 模组）-----------------------------------------
+# ESP32-S3 的 PSRAM 默认是 Quad，N16R8 必须改成 Octal，否则起不来 / 反复重启
+CONFIG_SPIRAM=y
+# CONFIG_SPIRAM_MODE_QUAD is not set
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# ---- 关键：关掉「把唤醒词音频发给服务器」-------------------------------------
+# main/application.cc 的 ContinueWakeWordInvoke() 里：
+#     #if CONFIG_SEND_WAKE_WORD_DATA
+#         ...直接发音频给服务器，不设置 play_popup_on_listening_
+#     #else
+#         play_popup_on_listening_ = true;   <- 唤醒提示音靠这个
+#     #endif
+# 这一项默认是 y，不关掉的话「空闲时被喊醒」这条主路径不会播任何提示音，
+# 也就是猫叫不会响。关掉它 = 回到旧版行为，只是服务器收不到唤醒词那段音频。
+# CONFIG_SEND_WAKE_WORD_DATA is not set
