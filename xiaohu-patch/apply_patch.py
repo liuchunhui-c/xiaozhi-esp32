@@ -374,6 +374,91 @@ def verify_c1(repo: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Step 2b - C-3: keep the server informed so it can answer on wake-up
+# --------------------------------------------------------------------------- #
+#
+# 背景：CONFIG_SEND_WAKE_WORD_DATA 关掉之后，ContinueWakeWordInvoke() 只设了
+# play_popup_on_listening_ = true 就进入聆听，**没有**调用
+# protocol_->SendWakeWordDetected()。结果是服务器根本不知道用户喊了唤醒词，
+# 于是只挂在那儿等音频 —— 表现就是「喵了一声，然后干等着，不说话」。
+#
+# SendWakeWordDetected() 发的是：
+#   {"session_id":"...","type":"listen","state":"detect","text":"<唤醒词>"}
+# 服务器把 text 当作用户说的话，LLM 才会接着开口。这也是用户想要的「应答」。
+#
+# 这里只在 ContinueWakeWordInvoke() 的函数体里插入，绝不碰
+# HandleWakeWordDetectedEvent() 里同名的那一行。
+
+C3_FUNCTION = "ContinueWakeWordInvoke"
+C3_ANCHOR = "play_popup_on_listening_ = true;"
+C3_MARK = "XiaoHu C-3"
+C3_INSERT = (
+    "\n    // XiaoHu C-3: 告知服务器「用户刚喊了唤醒词」。\n"
+    "    // 不发唤醒词的音频包，但仍然让 LLM 收到这句话，否则它只会静默进入聆听、\n"
+    "    // 不会有任何应答（用户反馈的就是这个现象）。\n"
+    "    protocol_->SendWakeWordDetected(wake_word);"
+)
+
+
+def apply_c3(repo: Path) -> None:
+    """Insert SendWakeWordDetected() into ContinueWakeWordInvoke()'s popup branch."""
+    path = repo / APPLICATION_CC
+    if not path.is_file():
+        raise PatchError(f"{path} not found")
+    text = read_source(path)
+
+    open_idx, close_idx = find_function_body(text, "Application", C3_FUNCTION)
+    body = text[open_idx:close_idx]
+    log(
+        f"found Application::{C3_FUNCTION}() at line {line_of(text, open_idx)} "
+        f"(chars {open_idx}-{close_idx})"
+    )
+
+    if C3_MARK in body:
+        log("Application::ContinueWakeWordInvoke() already patched by C-3, skip")
+        return
+    if C3_ANCHOR not in body:
+        raise PatchError(
+            f"C-3 failed: cannot find `{C3_ANCHOR}` inside "
+            f"Application::{C3_FUNCTION}(). The upstream code may have changed."
+        )
+    # 注意：不能用 "SendWakeWordDetected" 判断是否已打过补丁 —— 同一个函数的
+    # #if CONFIG_SEND_WAKE_WORD_DATA 分支里本来就有一份，会误判成已打过。
+    if C3_ANCHOR + C3_INSERT in body:
+        log("C-3 insertion already present")
+        return
+
+    new_body = body.replace(C3_ANCHOR, C3_ANCHOR + C3_INSERT, 1)
+    text = text[:open_idx] + new_body + text[close_idx:]
+    write_source(path, text)
+    ok(f"Application::{C3_FUNCTION}() now calls protocol_->SendWakeWordDetected()")
+
+
+def verify_c3(repo: Path) -> None:
+    """Assert the wake-word notice is present in exactly the right function."""
+    text = read_source(repo / APPLICATION_CC)
+
+    open_idx, close_idx = find_function_body(text, "Application", C3_FUNCTION)
+    body = text[open_idx:close_idx]
+    # 用我们的标记注释判断，不能用 SendWakeWordDetected —— #if 分支里本来就有一份
+    if C3_MARK not in body:
+        fail(f"Application::{C3_FUNCTION}() was not patched by C-3")
+        raise PatchError(
+            "C-3 failed: the device will meow and then wait silently with no reply"
+        )
+    ok(f"Application::{C3_FUNCTION}() notifies the server on wake-up")
+
+    # 保护：HandleWakeWordDetectedEvent 那边的 OGG_POPUP 分支不该被我们动过
+    g_open, g_close = find_function_body(text, "Application", "HandleWakeWordDetectedEvent")
+    g_body = text[g_open:g_close]
+    if C3_MARK in g_body:
+        raise PatchError(
+            "C-3 went too far: it modified HandleWakeWordDetectedEvent() as well"
+        )
+    ok("Application::HandleWakeWordDetectedEvent() untouched by C-3")
+
+
+# --------------------------------------------------------------------------- #
 # Step 3 - C-2: register self.cat.meow
 # --------------------------------------------------------------------------- #
 
@@ -559,18 +644,23 @@ def main(argv: Optional[List[str]] = None) -> int:
         apply_c1(repo)
         verify_c1(repo)
 
-        step(3, f"C-2: register {C2_MARKER} in McpServer::{C2_FUNCTION}()")
+        step(3, "C-3: notify server on wake-up so it actually answers")
+        apply_c3(repo)
+        verify_c3(repo)
+
+        step(4, f"C-2: register {C2_MARKER} in McpServer::{C2_FUNCTION}()")
         snippet_path = args.snippet or (patch_dir / "c2_snippet.cpp")
         apply_c2(repo, snippet_path)
         verify_c2(repo)
 
-        step(4, f"bump PROJECT_VER to {NEW_PROJECT_VER}")
+        step(5, f"bump PROJECT_VER to {NEW_PROJECT_VER}")
         apply_version(repo)
         verify_version(repo)
 
-        step(5, "final verification")
+        step(6, "final verification")
         verify_assets(repo)
         verify_c1(repo)
+        verify_c3(repo)
         verify_c2(repo)
         verify_version(repo)
 
