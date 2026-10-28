@@ -1,0 +1,164 @@
+# =============================================================================
+# 小虎 Little —— 云编译猫叫固件
+#
+# 把这个文件放到你自己 fork 的仓库里，路径必须一模一样：
+#     .github/workflows/build-xiaohu.yml
+#
+# 它做的事：
+#   1. 从官方仓库 78/xiaozhi-esp32 拉 v2.5.2 的源码（跟你 fork 里停在哪个分支无关）
+#   2. 把你上传的 xiaohu-patch/ 拷进去，跑 apply_patch.py 打补丁
+#   3. 用 sdkconfig.defaults.xiaohu 覆盖板型/屏幕/PSRAM（云上没法点菜单）
+#   4. 用 ESP-IDF v6.1 官方 Docker 镜像编译
+#   5. 合并成一个从 0x0 开始烧的固件，打包成 Artifact 让你下载
+# =============================================================================
+
+name: Build XiaoHu Meow Firmware
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply_meow_patch:
+        description: '打猫叫补丁（取消勾选 = 编译一份原版 v2.5.2 用来验硬件）'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  build:
+    name: Build xiaohu firmware (ESP32-S3)
+    runs-on: ubuntu-latest
+    container:
+      # 官方 xiaozhi-esp32 v2.5.2 自己的 CI 就用的这个镜像，见
+      # .github/workflows/build.yml 里的 container.image
+      image: espressif/idf:v6.1
+    timeout-minutes: 150
+
+    steps:
+      - name: 1/7 Check out my repository (patch files)
+        uses: actions/checkout@v4
+        with:
+          path: myrepo
+
+      - name: 2/7 Download official xiaozhi-esp32 v2.5.2
+        run: |
+          set -e
+          git clone --depth 1 --branch v2.5.2 https://github.com/78/xiaozhi-esp32.git src
+          cd src
+          echo "checked out: $(git log -1 --oneline)"
+          grep -m1 'set(PROJECT_VER' CMakeLists.txt
+
+      - name: 3/7 Copy my patch files into the source tree
+        run: |
+          set -e
+          cp -r myrepo/xiaohu-patch src/xiaohu-patch
+          ls -l src/xiaohu-patch
+
+      - name: 4/7 Apply the cat-meow patch
+        if: ${{ inputs.apply_meow_patch }}
+        run: |
+          set -e
+          python3 src/xiaohu-patch/apply_patch.py --repo src
+
+      - name: 5/7 Write board configuration (board + LCD + PSRAM)
+        run: |
+          set -e
+          cat src/xiaohu-patch/sdkconfig.defaults.xiaohu >> src/sdkconfig.defaults
+          echo "---------- last 30 lines of sdkconfig.defaults ----------"
+          tail -n 30 src/sdkconfig.defaults
+          echo "--------------------------------------------------------"
+
+      - name: 6/7 Build with ESP-IDF v6.1
+        run: |
+          set -e
+          source "$IDF_PATH/export.sh"
+          idf.py --version
+          cd src
+          idf.py set-target esp32s3
+          idf.py build
+
+      - name: 7/7 Merge into one flashable binary and pack
+        run: |
+          set -e
+          source "$IDF_PATH/export.sh"
+          cd src
+          idf.py merge-bin
+
+          VER=$(grep -m1 'set(PROJECT_VER' CMakeLists.txt | sed 's/.*"\(.*\)".*/\1/')
+          STAMP=$(date -u +%Y%m%d-%H%M)
+          if [ "${{ inputs.apply_meow_patch }}" = "true" ]; then
+            TAG=meow
+          else
+            TAG=stock
+          fi
+          MERGED="xiaohu-${TAG}-v${VER}-${STAMP}.bin"
+
+          mkdir -p out
+          cp build/merged-binary.bin "out/${MERGED}"
+
+          # 兜底：把各个单独的 bin 也拷出来，并生成地址表
+          echo "Flash addresses for ESP32-S3 (use ONLY if you do not use the merged file)" > out/flash-addresses.txt
+          echo "" >> out/flash-addresses.txt
+          if [ -f build/flash_args ]; then
+            grep -E '^0x' build/flash_args | while read -r addr path; do
+              if [ -f "$path" ]; then
+                cp "$path" "out/$(basename "$path")"
+                echo "  $(basename "$path")   ->   $addr" >> out/flash-addresses.txt
+              fi
+            done
+          else
+            echo "  (build/flash_args not found - just use the merged file above)" >> out/flash-addresses.txt
+          fi
+          echo "" >> out/flash-addresses.txt
+          echo "RECOMMENDED: flash ONLY ${MERGED} at address 0x0" >> out/flash-addresses.txt
+          echo "" >> out/flash-addresses.txt
+          echo "Chip: ESP32-S3   Flash size: 16MB   SPI speed: 80MHz   SPI mode: DIO" >> out/flash-addresses.txt
+
+          cat > out/HOW-TO-FLASH.txt <<EOF
+XiaoHu Little - firmware package
+=================================
+Generated: ${STAMP} UTC
+Project version: ${VER}
+Patch applied: ${TAG}
+
+RECOMMENDED (one file only)
+---------------------------
+Use Espressif Flash Download Tool (Windows):
+  chip      = ESP32-S3
+  file      = ${MERGED}
+  address   = 0x0
+  SPI SPEED = 80MHz
+  SPI MODE  = DIO
+  FLASH SIZE= 16MB
+  Tick "DoNotChgBin", then ERASE first, then START.
+
+FALLBACK (multiple files)
+-------------------------
+See flash-addresses.txt for the per-file addresses.
+
+IMPORTANT
+---------
+Project version is 99.0.0 so the official OTA cannot overwrite the meow sounds.
+If your device still gets overwritten, turn OFF OTA in the xiaozhi console.
+EOF
+
+          ls -l out
+          echo "MERGED_NAME=${MERGED}" >> "$GITHUB_ENV"
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xiaohu-firmware-r${{ github.run_number }}
+          path: src/out
+          if-no-files-found: error
+
+      - name: Summary
+        run: |
+          echo "### XiaoHu firmware built" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "File: \`${{ env.MERGED_NAME }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Download it from the Artifacts section at the bottom of this page, "
+          echo "unzip, and flash the single .bin at address 0x0 with Flash Download Tool." >> "$GITHUB_STEP_SUMMARY"
